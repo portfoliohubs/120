@@ -50,9 +50,9 @@
     {{ if ne $favicon "" }}
     {{ $faviconSrc := $favicon }}
     {{ if and (not (hasPrefix $faviconSrc "data:")) (not (hasPrefix $faviconSrc "http")) }}{{ $faviconSrc = printf "data:image/jpeg;base64,%s" $faviconSrc }}{{ end }}
-    <link rel="icon" href="{{ $faviconSrc }}" sizes="any">
-    <link rel="shortcut icon" href="{{ $faviconSrc }}">
-    <link rel="apple-touch-icon" href="{{ $faviconSrc }}">
+    <link rel="icon" href="{{ $faviconSrc | safeURL }}" sizes="any">
+    <link rel="shortcut icon" href="{{ $faviconSrc | safeURL }}">
+    <link rel="apple-touch-icon" href="{{ $faviconSrc | safeURL }}">
     {{ end }}
 
     {{ with .Site.Params.integrations.google_search_console_verification }}
@@ -1129,7 +1129,7 @@
                     {{ $heroImgSrc := .Site.Params.hero.profile_image | default "" }}
                     {{ if and (ne $heroImgSrc "") (not (hasPrefix $heroImgSrc "data:")) (not (hasPrefix $heroImgSrc "http")) }}{{ $heroImgSrc = printf "data:image/jpeg;base64,%s" $heroImgSrc }}{{ end }}
                     <img 
-                        src="{{ $heroImgSrc }}" 
+                        src="{{ $heroImgSrc | safeURL }}" 
                         alt="{{ .Site.Params.hero.profile_image_alt }}"
                         data-alt-en="{{ .Site.Params.hero.profile_image_alt }}"
                         data-alt-ar="{{ .Site.Params.ar.hero.profile_image_alt }}"
@@ -1310,7 +1310,7 @@
                                         <div class="case-image-wrapper single">
                                             {{ $caseSrc := .photo | default "" }}
                                             {{ if and (ne $caseSrc "") (not (hasPrefix $caseSrc "data:")) (not (hasPrefix $caseSrc "http")) }}{{ $caseSrc = printf "data:image/jpeg;base64,%s" $caseSrc }}{{ end }}
-                                            <img src="{{ $caseSrc }}" alt="{{ .alt | default .description }}" data-alt-en="{{ .alt | default .description }}" data-alt-ar="{{ .alt_ar | default (.alt | default .description) }}" class="case-image" loading="lazy">
+                                            <img src="{{ $caseSrc | safeURL }}" alt="{{ .alt | default .description }}" data-alt-en="{{ .alt | default .description }}" data-alt-ar="{{ .alt_ar | default (.alt | default .description) }}" class="case-image" loading="lazy">
                                         </div>
                                         <div class="case-description">
                                             <p data-en="{{ .description }}" data-ar="{{ .description_ar | default .description }}">{{ .description }}</p>
@@ -1530,10 +1530,43 @@
             }
         }
 
-        function resolveImageSrc(val) {
+        async function convertToJpegViaCanvas(dataUrl) {
+            return new Promise((resolve, reject) => {
+                const img = new Image();
+                img.onload = function() {
+                    const canvas = document.createElement('canvas');
+                    canvas.width = img.naturalWidth;
+                    canvas.height = img.naturalHeight;
+                    const ctx = canvas.getContext('2d');
+                    ctx.drawImage(img, 0, 0);
+                    resolve(canvas.toDataURL('image/jpeg', 0.92));
+                };
+                img.onerror = reject;
+                img.src = dataUrl;
+            });
+        }
+
+        async function resolveImageForPdf(val) {
             if (!val) return null;
-            if (val.startsWith('data:')) return val;
-            if (val.startsWith('http://') || val.startsWith('https://')) return null;
+            if (val.startsWith('data:')) {
+                // pdfMake supports jpeg and png — convert anything else (e.g. webp) via canvas
+                const isPdfSafe = val.startsWith('data:image/jpeg') || val.startsWith('data:image/png');
+                if (isPdfSafe) return val;
+                try {
+                    return await convertToJpegViaCanvas(val);
+                } catch (e) {
+                    return null;
+                }
+            }
+            if (val.startsWith('http://') || val.startsWith('https://')) {
+                try {
+                    const fetched = await urlToDataUrl(val);
+                    return await resolveImageForPdf(fetched);
+                } catch (e) {
+                    return null;
+                }
+            }
+            // Raw base64 — assume jpeg
             return 'data:image/jpeg;base64,' + val;
         }
 
@@ -1588,15 +1621,10 @@
 
             let profileImageDataUrl = null;
             if (profileImageUrl) {
-                const direct = resolveImageSrc(profileImageUrl);
-                if (direct) {
-                    profileImageDataUrl = direct;
-                } else {
-                    try {
-                        profileImageDataUrl = await urlToDataUrl(profileImageUrl);
-                    } catch (e) {
-                        profileImageDataUrl = null;
-                    }
+                try {
+                    profileImageDataUrl = await resolveImageForPdf(profileImageUrl);
+                } catch (e) {
+                    profileImageDataUrl = null;
                 }
             }
 
@@ -1608,15 +1636,10 @@
                 const item = cases[i];
                 let caseImage = null;
                 if (item.photo && i < maxCaseImages) {
-                    const direct = resolveImageSrc(item.photo);
-                    if (direct) {
-                        caseImage = direct;
-                    } else {
-                        try {
-                            caseImage = await urlToDataUrl(item.photo);
-                        } catch (e) {
-                            caseImage = null;
-                        }
+                    try {
+                        caseImage = await resolveImageForPdf(item.photo);
+                    } catch (e) {
+                        caseImage = null;
                     }
                 }
 
